@@ -5,6 +5,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace NSocks.Socks
 {
@@ -23,10 +25,10 @@ namespace NSocks.Socks
 		/// </summary>
 		/// <param name="networkStream">The network stream that's connected to the Socks5 server.</param>
 		/// <param name="credentials">The credentials to use to log into the server with. Optional.</param>
-		public static void PerformHandshake(Stream networkStream, NetworkCredential credentials = null)
+		public static async Task PerformHandshake(Stream networkStream, CancellationToken token = default, NetworkCredential credentials = null)
 		{
-			using var reader = new BinaryReader(networkStream, Encoding.ASCII, true);
-			using var writer = new BinaryWriter(networkStream, Encoding.ASCII, true);
+			await using var reader = new AsyncBinaryReader(networkStream, Encoding.ASCII, true);
+			await using var writer = new AsyncBinaryWriter(networkStream, Encoding.ASCII, true);
 
 			// Send handshake message
 
@@ -34,14 +36,14 @@ namespace NSocks.Socks
 				? new[] { SocksAuthenticationType.NoAuthentication, SocksAuthenticationType.UsernamePassword }
 				: new[] { SocksAuthenticationType.NoAuthentication };
 
-			WriteHandshakeMessage(writer, authenticationMethods);
-			writer.Flush();
+			await WriteHandshakeMessage(writer, token, authenticationMethods);
+			await writer.FlushAsync(token);
 
 			// Receive handshake response
 
 			byte[] handshakeBuffer = new byte[2];
 
-			if (reader.Read(handshakeBuffer) != 2)
+			if (await reader.ReadAsync(handshakeBuffer, token) != 2)
 				throw new InvalidDataException("Proxy response was invalid");
 
 			if (handshakeBuffer[0] != Socks5Version)
@@ -57,10 +59,10 @@ namespace NSocks.Socks
 					if (credentials == null)
 						throw new AuthenticationException("Authentication required but no credentials specified");
 
-					WriteAuthenticationMessage(writer, credentials.UserName, credentials.Password);
-					writer.Flush();
+					await WriteAuthenticationMessage(writer, credentials.UserName, credentials.Password, token);
+					await writer.FlushAsync(token);
 
-					if (reader.Read(handshakeBuffer) != 2)
+					if (await reader.ReadAsync(handshakeBuffer, token) != 2)
 						throw new InvalidDataException("Proxy response was invalid");
 
 					if (handshakeBuffer[0] != AuthNegotiationVersion)
@@ -83,20 +85,20 @@ namespace NSocks.Socks
 		/// <param name="networkStream">The network stream that's connected to the Socks5 server.</param>
 		/// <param name="destinationUri">The Uri of the host to connect to. Only the Host and Port properties are used.</param>
 		/// <param name="resolveDnsLocally">True if to resolve the hostname to an IP address locally, otherwise false to get the Socks5 server to do it.</param>
-		public static void SendConnectRequest(Stream networkStream, Uri destinationUri, bool resolveDnsLocally = true)
+		public static async Task SendConnectRequest(Stream networkStream, Uri destinationUri, bool resolveDnsLocally = true, CancellationToken token = default)
 		{
-			using var reader = new BinaryReader(networkStream, Encoding.ASCII, true);
-			using var writer = new BinaryWriter(networkStream, Encoding.ASCII, true);
+			await using var reader = new AsyncBinaryReader(networkStream, Encoding.ASCII, true);
+			await using var writer = new AsyncBinaryWriter(networkStream, Encoding.ASCII, true);
 
-			writer.Write(Socks5Version);
-			writer.Write((byte)SocksCommand.Connect);
-			writer.Write((byte)0); // Reserved
+			await writer.WriteAsync(Socks5Version, token);
+			await writer.WriteAsync((byte)SocksCommand.Connect, token);
+			await writer.WriteAsync((byte)0, token); // Reserved
 
 			if (!IPAddress.TryParse(destinationUri.Host, out var ipAddress))
 			{
 				if (resolveDnsLocally)
 				{
-					ipAddress = Dns.GetHostAddresses(destinationUri.Host).FirstOrDefault();
+					ipAddress = (await Dns.GetHostAddressesAsync(destinationUri.Host)).FirstOrDefault();
 
 					if (ipAddress == null)
 						throw new ArgumentException("Unable to resolve host", nameof(destinationUri));
@@ -109,31 +111,31 @@ namespace NSocks.Socks
 					? SocksAddressType.IPv6
 					: SocksAddressType.IPv4;
 
-				writer.Write((byte)addressType);
-				writer.Write(ipAddress.GetAddressBytes());
+				await writer.WriteAsync((byte)addressType, token);
+				await writer.WriteAsync(ipAddress.GetAddressBytes(), token);
 			}
 			else
 			{
-				writer.Write((byte)SocksAddressType.DomainName);
+				await writer.WriteAsync((byte)SocksAddressType.DomainName, token);
 
 				byte[] addressNameBytes = Encoding.ASCII.GetBytes(destinationUri.Host);
 
-				writer.Write((byte)addressNameBytes.Length);
-				writer.Write(addressNameBytes);
+				await writer.WriteAsync((byte)addressNameBytes.Length, token);
+				await writer.WriteAsync(addressNameBytes, token);
 			}
 
 			// We can't use the regular BinaryWriter.Write(uint) method here as it writes in little endian, when we need the port number written as big endian.
 			// Plus this makes it more consistent across runtime implementations.
 
-			writer.Write((byte)(destinationUri.Port >> 8));
-			writer.Write((byte)(destinationUri.Port & 0xFF));
+			await writer.WriteAsync((byte)(destinationUri.Port >> 8), token);
+			await writer.WriteAsync((byte)(destinationUri.Port & 0xFF), token);
 
-			writer.Flush();
+			await writer.FlushAsync(token);
 
-			if (reader.ReadByte() != Socks5Version)
+			if (await reader.ReadByteAsync(token) != Socks5Version)
 				throw new InvalidDataException("Proxy response was invalid");
 
-			var replyType = (SocksRequestReplyType)reader.ReadByte();
+			var replyType = (SocksRequestReplyType)await reader.ReadByteAsync(token);
 
 			switch (replyType)
 			{
@@ -147,32 +149,34 @@ namespace NSocks.Socks
 			// Since we are using the CONNECT command here, we do not need to parse the last part of the packet as they're only used for the BIND command
 			// Just read them to empty the network buffer
 
-			reader.ReadByte(); // Reserved byte
-			var bindAddressType = (SocksAddressType)reader.ReadByte(); // ATYP
+			await reader.ReadByteAsync(token); // Reserved byte
+			var bindAddressType = (SocksAddressType)await reader.ReadByteAsync(token); // ATYP
 
 			if (bindAddressType == SocksAddressType.DomainName)
 			{
-				var addressLength = reader.ReadByte();
-				reader.ReadBytes(addressLength); // Bind address
+				var addressLength = await reader.ReadByteAsync(token);
+				await reader.ReadBytesAsync(addressLength, token); // Bind address
 			}
 			else if (bindAddressType == SocksAddressType.IPv4)
-				reader.ReadBytes(4);
+				await reader.ReadBytesAsync(4, token);
 			else if (bindAddressType == SocksAddressType.IPv6)
-				reader.ReadBytes(16);
+				await reader.ReadBytesAsync(16, token);
+			else
+				throw new InvalidDataException("Unexpected bind address type");
 
-			reader.ReadBytes(2); // Bind port
+			await reader.ReadBytesAsync(2, token); // Bind port
 		}
 
-		private static void WriteHandshakeMessage(BinaryWriter writer, params SocksAuthenticationType[] authenticationTypes)
+		private static async Task WriteHandshakeMessage(AsyncBinaryWriter writer, CancellationToken token, params SocksAuthenticationType[] authenticationTypes)
 		{
-			writer.Write(Socks5Version);
-			writer.Write((byte)authenticationTypes.Length);
+			await writer.WriteAsync(Socks5Version, token);
+			await writer.WriteAsync((byte)authenticationTypes.Length, token);
 
 			foreach (var authenticationType in authenticationTypes)
-				writer.Write((byte)authenticationType);
+				await writer.WriteAsync((byte)authenticationType, token);
 		}
 
-		private static void WriteAuthenticationMessage(BinaryWriter writer, string username, string password)
+		private static async Task WriteAuthenticationMessage(AsyncBinaryWriter writer, string username, string password, CancellationToken token)
 		{
 			byte[] usernameBytes = Encoding.UTF8.GetBytes(username);
 			if (usernameBytes.Length > 255)
@@ -182,13 +186,13 @@ namespace NSocks.Socks
 			if (passwordBytes.Length > 255)
 				throw new ArgumentOutOfRangeException(nameof(password), "Password is too long");
 
-			writer.Write(AuthNegotiationVersion);
-
-			writer.Write((byte)usernameBytes.Length);
-			writer.Write(usernameBytes);
-
-			writer.Write((byte)passwordBytes.Length);
-			writer.Write(passwordBytes);
+			await writer.WriteAsync(AuthNegotiationVersion, token);
+			 
+			await writer.WriteAsync((byte)usernameBytes.Length, token);
+			await writer.WriteAsync(usernameBytes, token);
+			 
+			await writer.WriteAsync((byte)passwordBytes.Length, token);
+			await writer.WriteAsync(passwordBytes, token);
 		}
 	}
 }

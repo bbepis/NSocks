@@ -80,8 +80,8 @@ namespace NSocks
 
 			// Connect to the socks tunnel and set up the connection
 
-			Socks5Tunnel.PerformHandshake(networkStream, (NetworkCredential)Credentials);
-			Socks5Tunnel.SendConnectRequest(networkStream, request.RequestUri, ResolveDnsLocally);
+			await Socks5Tunnel.PerformHandshake(networkStream, cancellationToken, (NetworkCredential)Credentials);
+			await Socks5Tunnel.SendConnectRequest(networkStream, request.RequestUri, ResolveDnsLocally, cancellationToken);
 
 			// Build the SSL wrapper if this is a HTTPS connection
 			// Unfortunately you can't set 'using' variables, so we have to wrap this all in a try/finally statement
@@ -93,7 +93,7 @@ namespace NSocks
 				if (request.RequestUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
 				{
 					sslStream = new SslStream(networkStream, true);
-					sslStream.AuthenticateAsClient(request.RequestUri.Host, null,
+					await sslStream.AuthenticateAsClientAsync(request.RequestUri.Host, null,
 						SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12, true);
 				}
 
@@ -108,7 +108,8 @@ namespace NSocks
 			}
 			finally
 			{
-				sslStream?.Dispose();
+				if (sslStream != null)
+					await sslStream.DisposeAsync();
 			}
 		}
 	}
