@@ -47,8 +47,15 @@ namespace NSocks
 
 			do
 			{
-				copiedCount += CurrentBaseStream.Read(buffer, offset + copiedCount, count - copiedCount);
-			} while (copiedCount < count && SafeMoveNext());
+				int read = CurrentBaseStream.Read(buffer, offset + copiedCount, count - copiedCount);
+
+				copiedCount += read;
+
+				if (read <= 0)
+					if (!SafeMoveNext())
+						break;
+
+			} while (copiedCount < count);
 
 			_position += copiedCount;
 
@@ -64,8 +71,15 @@ namespace NSocks
 
 			do
 			{
-				copiedCount += await CurrentBaseStream.ReadAsync(buffer, offset + copiedCount, count - copiedCount, cancellationToken);
-			} while (copiedCount < count && SafeMoveNext());
+				int read = await CurrentBaseStream.ReadAsync(buffer, offset + copiedCount, count - copiedCount, cancellationToken);
+
+				copiedCount += read;
+
+				if (read <= 0)
+					if (!SafeMoveNext())
+						break;
+
+			} while (copiedCount < count);
 
 			_position += copiedCount;
 
@@ -82,9 +96,17 @@ namespace NSocks
 
 			do
 			{
-				copiedCount += CurrentBaseStream.Read(currentSpan);
+				int read = CurrentBaseStream.Read(currentSpan);
+
+				copiedCount += read;
+
+				if (read <= 0)
+					if (!SafeMoveNext())
+						break;
+
 				currentSpan = buffer.Slice(copiedCount);
-			} while (copiedCount < buffer.Length && SafeMoveNext());
+
+			} while (copiedCount < buffer.Length);
 
 			_position += copiedCount;
 
@@ -101,9 +123,17 @@ namespace NSocks
 
 			do
 			{
-				copiedCount += await CurrentBaseStream.ReadAsync(currentSpan, cancellationToken);
+				int read = await CurrentBaseStream.ReadAsync(currentSpan, cancellationToken);
+
+				copiedCount += read;
+
+				if (read <= 0)
+					if (!SafeMoveNext())
+						break;
+
 				currentSpan = buffer.Slice(copiedCount);
-			} while (copiedCount < buffer.Length && SafeMoveNext());
+
+			} while (copiedCount < buffer.Length);
 
 			_position += copiedCount;
 

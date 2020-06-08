@@ -113,7 +113,7 @@ namespace NSocks
 
 			if (headers.Contains("Transfer-Encoding"))
 			{
-				throw new NotImplementedException("Chunked responses are currently not supported");
+				baseStream = ChunkedDataStreamDecoder.GetStream(baseStream);
 			}
 
 			string contentEncoding = ResponseHelper.GetContentEncoding(contentHeaders);

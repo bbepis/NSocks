@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
@@ -63,7 +64,7 @@ namespace NSocks
 
 			// Create the underlying socket to the proxy server, and connect to it
 
-			using var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+			var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
 
 			var resolvedAddresses = await Dns.GetHostAddressesAsync(ProxyUri.Host);
 
@@ -74,7 +75,7 @@ namespace NSocks
 
 			await socket.ConnectAsync(resolvedAddresses[0], ProxyUri.Port);
 
-			await using var networkStream = new NetworkStream(socket, true);
+			var networkStream = new NetworkStream(socket, true);
 
 
 
@@ -86,31 +87,31 @@ namespace NSocks
 			// Build the SSL wrapper if this is a HTTPS connection
 			// Unfortunately you can't set 'using' variables, so we have to wrap this all in a try/finally statement
 
-			SslStream sslStream = null;
 
-			try
+
+			Stream baseStream;
+
+			if (request.RequestUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
 			{
-				if (request.RequestUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
-				{
-					sslStream = new SslStream(networkStream, true);
-					await sslStream.AuthenticateAsClientAsync(request.RequestUri.Host, null,
-						SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12, true);
-				}
+				SslStream sslStream = new SslStream(networkStream, false);
+				await sslStream.AuthenticateAsClientAsync(request.RequestUri.Host, null,
+					SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12, true);
 
-				// Build and send request
-
-				await RequestSerializer.WriteRequestToStreamAsync(networkStream, request, CookieContainer);
-
-				// Receive and parse response
-
-				var builder = new ResponseSerializer(networkStream);
-				return await builder.DeserializeResponseAsync(CookieContainer);
+				baseStream = sslStream;
 			}
-			finally
+			else
 			{
-				if (sslStream != null)
-					await sslStream.DisposeAsync();
+				baseStream = networkStream;
 			}
+
+			// Build and send request
+
+			await RequestSerializer.WriteRequestToStreamAsync(baseStream, request, CookieContainer);
+
+			// Receive and parse response
+
+			var builder = new ResponseSerializer(baseStream);
+			return await builder.DeserializeResponseAsync(CookieContainer);
 		}
 	}
 }
